@@ -106,6 +106,189 @@ def spikes_to_firing_rate_matrix(cluster_data, bin_width=0.1, duration=None):
     return rates_matrix, cluster_ids, bin_edges
 
 
+def build_spontaneous_activity_matrix(
+    cluster_data,
+    trials_df,
+    mouse_id=None,
+    bin_width=0.1,
+    spike_feature="count",
+    concatenate=True,
+):
+    """
+    Build a neuron x time matrix for spontaneous activity outside the trial period.
+
+    Spontaneous activity is defined here as the time before the first trial start
+    and after the last trial end for a given mouse. The two periods are binned
+    separately and then concatenated along the time axis.
+
+    Parameters
+    ----------
+    cluster_data : dict
+        Output of ``load_mouse_data`` for a single mouse.
+    trials_df : pd.DataFrame
+        Trial table containing at least ``trial_start`` and ``trial_end``. If it
+        also contains ``mouse_id``, the optional ``mouse_id`` argument can be used
+        to select one mouse.
+    mouse_id : int, optional
+        Mouse identifier used to filter ``trials_df`` when a ``mouse_id`` column
+        is present.
+    bin_width : float, optional
+        Width of the time bins in seconds. Default is 0.1 (100 ms).
+    spike_feature : {"count", "rate"}, optional
+        Whether to return raw spike counts or firing rates (Hz) within each bin.
+    concatenate : bool, optional
+        If True, concatenate pre-trial and post-trial spontaneous activity along
+        the time axis. If False, return them separately.
+
+    Returns
+    -------
+    If ``concatenate=True``:
+        spontaneous_matrix : np.ndarray
+            2D array with shape ``(n_neurons, n_spontaneous_bins)``.
+        cluster_ids : list
+            Cluster IDs matching the row order in ``spontaneous_matrix``.
+        bin_edges : np.ndarray
+            Bin edges for the concatenated spontaneous periods, expressed in a
+            new concatenated time axis starting at 0.
+        interval_info : pd.DataFrame
+            Metadata describing the pre-trial and post-trial spontaneous segments.
+
+    If ``concatenate=False``:
+        spontaneous_blocks : dict
+            Dictionary keyed by ``pre_trial`` and ``post_trial``. Each value is a
+            dictionary with keys ``matrix`` and ``bin_edges``.
+        cluster_ids : list
+            Cluster IDs matching the row order in each returned matrix.
+        interval_info : pd.DataFrame
+            Metadata describing the pre-trial and post-trial spontaneous segments.
+    """
+    required_columns = ["trial_start", "trial_end"]
+    missing_columns = [col for col in required_columns if col not in trials_df.columns]
+    if missing_columns:
+        raise ValueError(f"trials_df is missing required columns: {missing_columns}")
+    if spike_feature not in {"count", "rate"}:
+        raise ValueError("spike_feature must be either 'count' or 'rate'")
+    if bin_width <= 0:
+        raise ValueError("bin_width must be positive")
+
+    trial_table = trials_df.copy()
+    if "mouse_id" in trial_table.columns:
+        if mouse_id is not None:
+            trial_table = trial_table.query("mouse_id == @mouse_id")
+        elif trial_table["mouse_id"].nunique() > 1:
+            raise ValueError(
+                "trials_df contains multiple mice. Pass mouse_id or pre-filter the DataFrame."
+            )
+
+    if trial_table.empty:
+        raise ValueError("No trials available after filtering.")
+
+    cluster_ids = sorted(cluster_data)
+    all_spike_times = [
+        np.asarray(cluster_data[cid]["spikes"], dtype=float) for cid in cluster_ids
+    ]
+    non_empty_spike_times = [spikes for spikes in all_spike_times if spikes.size > 0]
+    if not non_empty_spike_times:
+        empty_interval_info = pd.DataFrame(
+            columns=[
+                "segment",
+                "start",
+                "end",
+                "duration",
+                "n_bins",
+                "concat_start",
+                "concat_end",
+            ]
+        )
+        if concatenate:
+            return (
+                np.empty((len(cluster_ids), 0), dtype=float),
+                cluster_ids,
+                np.array([0.0]),
+                empty_interval_info,
+            )
+        return ({}, cluster_ids, empty_interval_info)
+
+    session_start = min(spikes.min() for spikes in non_empty_spike_times)
+    session_end = max(spikes.max() for spikes in non_empty_spike_times)
+    first_trial_start = float(trial_table["trial_start"].min())
+    last_trial_end = float(trial_table["trial_end"].max())
+
+    spontaneous_intervals = [
+        ("pre_trial", session_start, first_trial_start),
+        ("post_trial", last_trial_end, session_end),
+    ]
+
+    interval_rows = []
+    binned_blocks = []
+    concatenated_edges = [0.0]
+    spontaneous_blocks = {}
+    concat_time = 0.0
+
+    for segment_name, start, end in spontaneous_intervals:
+        duration = float(end - start)
+        if duration <= 0:
+            continue
+
+        bin_edges = np.arange(start, end, bin_width)
+        if len(bin_edges) == 0 or bin_edges[-1] < end:
+            bin_edges = np.append(bin_edges, end)
+        if len(bin_edges) < 2:
+            continue
+
+        segment_matrix = np.zeros((len(cluster_ids), len(bin_edges) - 1), dtype=float)
+        for row_idx, cid in enumerate(cluster_ids):
+            spike_times = np.asarray(cluster_data[cid]["spikes"], dtype=float)
+            in_segment = spike_times[(spike_times >= start) & (spike_times < end)]
+            counts, _ = np.histogram(in_segment, bins=bin_edges)
+            segment_matrix[row_idx, :] = counts
+
+        if spike_feature == "rate":
+            bin_durations = np.diff(bin_edges)
+            segment_matrix = segment_matrix / bin_durations[np.newaxis, :]
+
+        binned_blocks.append(segment_matrix)
+        spontaneous_blocks[segment_name] = {
+            "matrix": segment_matrix,
+            "bin_edges": bin_edges,
+        }
+        segment_widths = np.diff(bin_edges)
+        for width in segment_widths:
+            concatenated_edges.append(concatenated_edges[-1] + float(width))
+        concat_end = concat_time + duration
+        interval_rows.append(
+            {
+                "segment": segment_name,
+                "start": start,
+                "end": end,
+                "duration": duration,
+                "n_bins": segment_matrix.shape[1],
+                "concat_start": concat_time,
+                "concat_end": concat_end,
+            }
+        )
+        concat_time = concat_end
+
+    if not binned_blocks:
+        interval_info = pd.DataFrame(interval_rows)
+        if concatenate:
+            return (
+                np.empty((len(cluster_ids), 0), dtype=float),
+                cluster_ids,
+                np.array([0.0]),
+                interval_info,
+            )
+        return ({}, cluster_ids, interval_info)
+
+    spontaneous_matrix = np.concatenate(binned_blocks, axis=1)
+    concatenated_bin_edges = np.asarray(concatenated_edges, dtype=float)
+    interval_info = pd.DataFrame(interval_rows)
+
+    if concatenate:
+        return spontaneous_matrix, cluster_ids, concatenated_bin_edges, interval_info
+    return spontaneous_blocks, cluster_ids, interval_info
+
+
 def build_sklearn_trial_dataset(
     cluster_data,
     trials_df,
