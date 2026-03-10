@@ -30,6 +30,7 @@ cv = LeaveOneGroupOut()
 clf = LDA(solver="eigen", shrinkage="auto", priors=[0.5, 0.5])
 # use logistic regression instead
 from sklearn.linear_model import LogisticRegression
+
 clf = LogisticRegression(penalty="l2", class_weight="balanced")
 
 pipeline = make_pipeline(StandardScaler(), clf)
@@ -153,4 +154,28 @@ for mouse_id in trange(1, 19):
     results.append(mouse_scores)
 
 df_results = pd.DataFrame(results)
-df_results.to_csv("results.csv", index=False)
+df_results.to_csv(f"{Path(__file__).stem}_results.csv", index=False)
+
+
+# %% plot the results
+
+# pivot the results such that all decoding scores are in one column
+df_results_pivot = df_results.melt(
+    id_vars=["mouse_id"], var_name="phase", value_name="score"
+)
+fig, ax = plt.subplots(figsize=(2, 2.5), layout="constrained")
+sns.boxplot(
+    x="phase",
+    y="score",
+    data=df_results_pivot,
+    fill=None,
+    color="black",
+    # errorbar=None,
+    width=0.5,
+)
+sns.stripplot(x="phase", y="score", data=df_results_pivot, color="black", size=3)
+# rotate the x-axis labels by 45 degrees
+ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
+sns.despine()
+[x.patch.set_visible(False) for x in (fig, ax)]
+fig.savefig("q4.svg", transparent=True)
