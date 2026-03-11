@@ -71,7 +71,7 @@ cluster_area_info = pd.DataFrame(
 cluster_area_info["row_idx"] = np.arange(len(cluster_ids))
 
 spontaneous_by_area = {
-    brain_area: spontaneous_matrix[group["row_idx"].to_numpy(), :]
+    brain_area: spontaneous_matrix[group["row_idx"].to_numpy()]
     for brain_area, group in cluster_area_info.groupby("brain_area")
 }
 
