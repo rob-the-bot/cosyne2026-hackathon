@@ -1,13 +1,16 @@
 name: con2phys
 dependencies:
-  - python
-  - pip
-  - seaborn
-  - pandas
-  - scipy
-  - ipykernel
-  - ipywidgets
-  - tqdm
-  - scikit-learn
-  - statsmodels
-  - neurodsp
+- python
+- pip
+- seaborn
+- pandas
+- scipy
+- ipykernel
+- ipywidgets
+- tqdm
+- scikit-learn
+- statsmodels
+- neurodsp
+- pip:
+  - nemos
+  - pynapple
