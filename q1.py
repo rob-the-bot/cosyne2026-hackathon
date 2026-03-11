@@ -34,7 +34,11 @@ def process_mouse(mouse_id):
     
     return pd.DataFrame(res, columns=["mouse_id", "brain_area", "#ripples"])
 
-df_list = [process_mouse(mouse_id) for mouse_id in trange(1, 19)]
+df_list = []
+
+for mouse_id in trange(1, 19):
+    df_list.append(process_mouse(mouse_id))
+
 res = pd.concat(df_list, ignore_index=True)
 
 # %% plot the results
@@ -46,3 +50,10 @@ sns.despine()
 [x.patch.set_visible(False) for x in (fig, ax)]
 ax.set(xlabel="Brain Area", ylabel="Number of Ripples")
 fig.savefig("q1.svg", transparent=True)
+
+
+# %% kruskal-wallis test
+
+from scipy.stats import kruskal
+
+kruskal(*res.groupby("brain_area")["#ripples"].apply(list))
